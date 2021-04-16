@@ -3,67 +3,66 @@ package sensu
 import (
 	"bytes"
 	"encoding/json"
-	"log"
 	"time"
+
+	"github.com/upfluence/goutils/log"
+	"github.com/upfluence/sensu-go/sensu/client"
 )
+
+const defaultInterval = 20 * time.Second
 
 type KeepAlive struct {
 	Client    *Client
 	closeChan chan bool
 }
 
-func NewKeepAlive() *KeepAlive {
-	return &KeepAlive{nil, make(chan bool)}
+type keepAlivePayload struct {
+	*client.Client
+	Timestamp int64  `json:"timestamp"`
+	Version   string `json:"version"`
 }
 
-func (k *KeepAlive) SetClient(c *Client) error {
-	k.Client = c
-
-	return nil
+func NewKeepAlive(c *Client) *KeepAlive {
+	return &KeepAlive{c, make(chan bool)}
 }
 
-func (k *KeepAlive) PublishKeepAlive() {
-	log.Println("Publishing keepalive")
+func (k *KeepAlive) publishKeepAlive() {
+	log.Info("Publishing keepalive")
 
-	payload := make(map[string]interface{})
-
-	payload["timestamp"] = time.Now().Unix()
-	payload["version"] = CurrentVersion
-	payload["name"] = k.Client.Config.Name()
-	payload["address"] = k.Client.Config.Address()
-	payload["subscriptions"] = k.Client.Config.Subscriptions()
-
-	p, err := json.Marshal(payload)
+	p, err := json.Marshal(
+		keepAlivePayload{
+			k.Client.Config.Client(),
+			time.Now().Unix(),
+			currentVersion,
+		},
+	)
 
 	if err != nil {
-		log.Printf("something goes wrong : %s", err.Error())
+		log.Warningf("Something went wrong: %s", err.Error())
+		return
 	}
-
-	log.Printf("Payload sent: %s", bytes.NewBuffer(p).String())
 
 	err = k.Client.Transport.Publish("direct", "keepalives", "", p)
+	log.Infof("Payload sent: %s", bytes.NewBuffer(p).String())
 
 	if err != nil {
-		log.Printf("something goes wrong : %s", err.Error())
+		log.Warningf("Something went wrong: %s", err.Error())
 	}
-
 }
 
 func (k *KeepAlive) Start() error {
-	t := time.Tick(20 * time.Second)
+	t := time.Tick(defaultInterval)
 
-	k.PublishKeepAlive()
+	k.publishKeepAlive()
 
 	for {
 		select {
 		case <-t:
-			k.PublishKeepAlive()
+			k.publishKeepAlive()
 		case <-k.closeChan:
 			return nil
 		}
 	}
-
-	return nil
 }
 
 func (k *KeepAlive) Close() {

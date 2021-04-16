@@ -2,94 +2,176 @@ package sensu
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"strings"
+
+	"github.com/upfluence/sensu-go/sensu/check"
+	"github.com/upfluence/sensu-go/sensu/client"
+	"github.com/upfluence/sensu-go/sensu/transport/rabbitmq"
 )
 
-const DefaultRabbitMQURI string = "amqp://guest:guest@localhost:5672/%2f"
+const defaultRabbitMQURI string = "amqp://guest:guest@localhost:5672/%2F"
 
-type ConfigFlagSet struct {
-	ConfigFile string
-	Verbose    bool
+var errNoClientName = errors.New("No client name provided")
+
+type configFlagSet struct {
+	configFile string
+	verbose    bool
 }
 
 type Config struct {
-	FlagSet *ConfigFlagSet
-	config  map[string]interface{}
+	flagSet *configFlagSet
+	config  *configPayload
 }
 
-func NewConfigFromFlagSet(flagset *ConfigFlagSet) *Config {
-	cfg := Config{
-		flagset,
-		make(map[string]interface{}),
+type configPayload struct {
+	Client            *client.Client              `json:"client,omitempty"`
+	Checks            []*check.Check              `json:"checks,omitempty"`
+	RabbitMQURI       *string                     `json:"rabbitmq_uri,omitempty"`
+	RabbitMQTransport []*rabbitmq.TransportConfig `json:"rabbitmq,omitempty"`
+}
+
+func fetchEnv(envs ...string) string {
+	for _, env := range envs {
+		if v := os.Getenv(env); v != "" {
+			return v
+		}
 	}
 
-	if flagset != nil && flagset.ConfigFile != "" {
-		buf, err := ioutil.ReadFile(flagset.ConfigFile)
+	return ""
+}
 
-		if err != nil {
-			panic(err)
-		}
-
-		err = json.Unmarshal(buf, &cfg.config)
-
-		if err != nil {
-			panic(err)
-		}
-
-		cfg.config = cfg.config["client"].(map[string]interface{})
+// split is a wrapper for strings.Split, which returns an empty array
+// for empty string inputs instead of an array containing an empty string
+func split(str string, token string) []string {
+	if len(str) == 0 {
+		return []string{}
 	}
 
-	return &cfg
+	return strings.Split(str, token)
+}
+
+func NewConfigFromFile(
+	flagset *configFlagSet,
+	configFile string,
+) (*Config, error) {
+	cfg := Config{flagset, &configPayload{}}
+
+	if configFile != "" {
+		buf, err := ioutil.ReadFile(configFile)
+
+		if err != nil {
+			return nil, err
+		}
+
+		if err := json.Unmarshal(buf, &cfg.config); err != nil {
+			return nil, err
+		}
+
+		cfg.addDefaultSubscription()
+	}
+
+	if cfg.Client().Name == "" {
+		return nil, errNoClientName
+	}
+
+	return &cfg, nil
+}
+
+func NewConfigFromFlagSet(flagset *configFlagSet) (*Config, error) {
+	var file string
+
+	if flagset != nil {
+		file = flagset.configFile
+	}
+
+	return NewConfigFromFile(flagset, file)
 }
 
 func (c *Config) RabbitMQURI() string {
-	uri := os.Getenv("RABBITMQ_URL")
-
-	if uri == "" && c.config["rabbit_uri"] != nil {
-		uri = c.config["rabbit_uri"].(string)
-	} else if uri == "" {
-		uri = DefaultRabbitMQURI
+	if cfg := c.config; cfg != nil && cfg.RabbitMQURI != nil {
+		return *cfg.RabbitMQURI
+	} else if uri := fetchEnv("RABBITMQ_URI", "RABBITMQ_URL"); uri != "" {
+		return uri
 	}
 
-	return uri
+	return defaultRabbitMQURI
 }
 
-func (c *Config) Name() string {
-	name := os.Getenv("SENSU_CLIENT_NAME")
-
-	if name == "" && c.config["name"] != nil {
-		name = c.config["name"].(string)
+// RabbitMQHAConfig superseeds RabbitMQURI() by first checking
+// for a HA cluster configuration and then calling RabbitMQURI()
+// if it can't find one
+func (c *Config) RabbitMQHAConfig() ([]*rabbitmq.TransportConfig, error) {
+	if cfg := c.config; cfg != nil && cfg.RabbitMQTransport != nil {
+		return cfg.RabbitMQTransport, nil
 	}
 
-	return name
-}
+	config, err := rabbitmq.NewTransportConfig(c.RabbitMQURI())
 
-func (c *Config) Address() string {
-	address := os.Getenv("SENSU_ADDRESS")
-
-	if address == "" && c.config["address"] != nil {
-		address = c.config["address"].(string)
+	if err != nil {
+		return []*rabbitmq.TransportConfig{}, err
 	}
 
-	return address
+	return []*rabbitmq.TransportConfig{config}, nil
 }
 
-func (c *Config) Subscriptions() []string {
-	subscriptions := []string{}
-
-	for _, s := range strings.Split(os.Getenv("SENSU_CLIENT_SUBSCRIPTIONS"), ",") {
-		if s != "" {
-			subscriptions = append(subscriptions, s)
+func (c *Config) Client() *client.Client {
+	if c.config != nil {
+		if c.config.Client != nil {
+			return c.config.Client
 		}
+	} else {
+		c.config = &configPayload{}
 	}
 
-	if len(subscriptions) == 0 && c.config["subscriptions"] != nil {
-		for _, s := range c.config["subscriptions"].([]interface{}) {
-			subscriptions = append(subscriptions, s.(string))
-		}
+	// Initialize the config from environment variables
+	c.config.Client = &client.Client{
+		Name:          os.Getenv("SENSU_CLIENT_NAME"),
+		Address:       fetchEnv("SENSU_CLIENT_ADDRESS", "SENSU_ADDRESS"),
+		Subscriptions: split(os.Getenv("SENSU_CLIENT_SUBSCRIPTIONS"), ","),
 	}
 
-	return subscriptions
+	c.addDefaultSubscription()
+
+	return c.config.Client
+}
+
+func (c *Config) Checks() []*check.Check {
+	if cfg := c.config; cfg != nil {
+		return cfg.Checks
+	}
+
+	return []*check.Check{}
+}
+
+// addDefaultSubscription emulates ruby client behavior:
+// add default subscription - client:name
+// Without at least one subscription sensu server will crash.
+func (c *Config) addDefaultSubscription() {
+	c.config.Client.Subscriptions = removeDuplicates(
+		append(
+			c.config.Client.Subscriptions,
+			fmt.Sprintf("client:%s", c.config.Client.Name),
+		),
+	)
+}
+
+// Removes duplicates from string slices
+func removeDuplicates(xs []string) []string {
+
+	temp := make(map[string]bool)
+	result := []string{}
+
+	for _, x := range xs {
+		temp[x] = true
+	}
+
+	for k, _ := range temp {
+		result = append(result, k)
+	}
+
+	return result
 }

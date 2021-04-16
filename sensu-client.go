@@ -1,14 +1,25 @@
 package main
 
 import (
+	"log"
+
+	"github.com/upfluence/sensu-go/sensu/transport/rabbitmq"
 	"github.com/upfluence/sensu-client-go/sensu"
-	"github.com/upfluence/sensu-client-go/sensu/transport"
 )
 
 func main() {
-	cfg := sensu.NewConfigFromFlagSet(sensu.ExtractFlags())
+	cfg, err := sensu.NewConfigFromFlagSet(sensu.ExtractFlags())
 
-	t := transport.NewRabbitMQTransport(cfg)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	t, err := rabbitmq.NewRabbitMQTransport(cfg.RabbitMQURI())
+
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
 	client := sensu.NewClient(t, cfg)
 
 	client.Start()

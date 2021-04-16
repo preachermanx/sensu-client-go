@@ -53,13 +53,16 @@ this function pointer into an `check.ExtensionCheck` and add it into the
 package main
 
 ```golang
+package main
+
 import (
 	"net/http"
 
+	"github.com/upfluence/goutils/log"
+	"github.com/upfluence/sensu-go/sensu/transport/rabbitmq"
 	"github.com/upfluence/sensu-client-go/sensu"
 	"github.com/upfluence/sensu-client-go/sensu/check"
 	"github.com/upfluence/sensu-client-go/sensu/handler"
-	"github.com/upfluence/sensu-client-go/sensu/transport"
 )
 
 func HTTPCheck() check.ExtensionCheckResult {
@@ -79,10 +82,19 @@ func HTTPCheck() check.ExtensionCheckResult {
 }
 
 func main() {
-	cfg := sensu.NewConfigFromFlagSet(sensu.ExtractFlags())
+	cfg, err := sensu.NewConfigFromFlagSet(sensu.ExtractFlags())
 
-	t := transport.NewRabbitMQTransport(cfg)
-	client := sensu.NewClient(t, cfg)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	t, err := rabbitmq.NewRabbitMQTransport(cfg.RabbitMQURI())
+
+  if err != nil {
+		log.Fatal(err.Error())
+	}
+
+  client := sensu.NewClient(t, cfg)
 
 	check.Store["http_check"] = &check.ExtensionCheck{HTTPCheck}
 
@@ -104,15 +116,16 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/upfluence/goutils/log"
+	"github.com/upfluence/sensu-go/sensu/transport/rabbitmq"
 	"github.com/upfluence/sensu-client-go/sensu"
 	"github.com/upfluence/sensu-client-go/sensu/check"
-	"github.com/upfluence/sensu-client-go/sensu/transport"
 	"github.com/upfluence/sensu-client-go/sensu/utils"
 )
 
-func HTTPCallDuration() (float64, err) {
+func HTTPCallDuration() (float64, error) {
 	t0 := time.Now().Unix()
-	resp, err := http.Get("http://example.com/")
+	_, err := http.Get("http://example.com/")
 
 	return float64(time.Now().Unix() - t0), err
 }
@@ -126,12 +139,21 @@ func main() {
 		CheckMessage: func(v float64) string {
 			return fmt.Sprintf("Duration: %.2fs", v)
 		},
-    Comp:             func(x,y float64) bool { return x > y }
+		Comp: func(x, y float64) bool { return x > y },
 	}
 
-	cfg := sensu.NewConfigFromFlagSet(sensu.ExtractFlags())
+	cfg, err := sensu.NewConfigFromFlagSet(sensu.ExtractFlags())
 
-	t := transport.NewRabbitMQTransport(cfg)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	t, err := rabbitmq.NewRabbitMQTransport(cfg.RabbitMQURI())
+
+  if err != nil {
+		log.Fatal(err.Error())
+	}
+
 	client := sensu.NewClient(t, cfg)
 
 	check.Store["http_duration_check"] = &check.ExtensionCheck{c.Check}
@@ -168,9 +190,9 @@ $ ./sensu-client -c sensu-config.json
 
 In the both cases, you can use the  `-c` flag to use a specific
 configuration file, the configuration is pretty similar to the ruby
-client [check out the doc](http://sensuapp.org/docs/0.16/clients). The
+client [check out the doc](https://sensuapp.org/docs/0.26/reference/clients.html). The
 difference is about the configuration of the RabbitMQ client. You have
-to provide an RabbitMQ URI through the `RABBITMQ_URL` environment
+to provide an RabbitMQ URI through the `RABBITMQ_URI` environment
 variable or by adding the `rabbit_uri` key into the root of the JSON
 configuration file.
 
@@ -182,10 +204,9 @@ variables:
 | SENSU_CLIENT_SUBSCRIPTIONS | Comma separated subscriptions | email,slack |
 | SENSU_CLIENT_NAME | The name of the client | node-01 |
 | SENSU_CLIENT_ADDRESS | The ip addres of the client | 127.0.0.1 |
-| RABBITMQ_URL | RabbitMQ url | amqp://guest:guest@localhost:5672/%2f |
+| RABBITMQ_URI | RabbitMQ URI | amqp://guest:guest@localhost:5672/%2f |
 
 ## Roadmap
 
 * [ ] Implement the keep-alives specific configurations (thresholds and
   hanlder)
-* [ ] Implement the standalone check mechanism

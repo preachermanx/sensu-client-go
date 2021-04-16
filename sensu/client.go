@@ -1,24 +1,25 @@
 package sensu
 
 import (
-	"log"
 	"os"
 	"os/signal"
 	"time"
+
+	"github.com/upfluence/goutils/log"
+	"github.com/upfluence/sensu-go/sensu/transport"
 )
 
 const (
-	CurrentVersion     string        = "0.1.2"
-	CONNECTION_TIMEOUT time.Duration = 5 * time.Second
+	currentVersion    = "1.2.0"
+	connectionTimeout = 5 * time.Second
 )
 
 type Client struct {
-	Transport Transport
+	Transport transport.Transport
 	Config    *Config
 }
 
-func NewClient(transport Transport, cfg *Config) *Client {
-
+func NewClient(transport transport.Transport, cfg *Config) *Client {
 	client := Client{
 		transport,
 		cfg,
@@ -28,14 +29,16 @@ func NewClient(transport Transport, cfg *Config) *Client {
 }
 
 func (c *Client) buildProcessors() []Processor {
-	processors := []Processor{NewKeepAlive()}
+	processors := []Processor{NewKeepAlive(c)}
 
-	for _, s := range c.Config.Subscriptions() {
-		processors = append(processors, NewSubscriber(s))
+	for _, s := range c.Config.Client().Subscriptions {
+		processors = append(processors, NewSubscriber(s, c))
 	}
 
-	for _, processor := range processors {
-		processor.SetClient(c)
+	for _, check := range c.Config.Checks() {
+		if check.Standalone {
+			processors = append(processors, NewStandalone(check, c))
+		}
 	}
 
 	return processors
@@ -50,7 +53,7 @@ func (c *Client) Start() error {
 
 		for !c.Transport.IsConnected() {
 			select {
-			case <-time.After(CONNECTION_TIMEOUT):
+			case <-time.After(connectionTimeout):
 				c.Transport.Connect()
 			case <-sig:
 				return c.Transport.Close()
@@ -64,7 +67,7 @@ func (c *Client) Start() error {
 
 		select {
 		case s := <-sig:
-			log.Printf("Signal %s received", s.String())
+			log.Noticef("Signal %s received", s.String())
 
 			for _, processor := range processors {
 				processor.Close()
@@ -72,7 +75,7 @@ func (c *Client) Start() error {
 
 			return c.Transport.Close()
 		case <-c.Transport.GetClosingChan():
-			log.Println("Transport disconnected")
+			log.Notice("Transport disconnected")
 
 			for _, processor := range processors {
 				processor.Close()

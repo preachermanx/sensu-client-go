@@ -3,47 +3,47 @@ package check
 import (
 	"bytes"
 	"os/exec"
-	"strings"
 	"syscall"
 	"time"
+
+	stdCheck "github.com/upfluence/sensu-go/sensu/check"
 )
 
 type ExternalCheck struct {
-	Command string
+	Request *stdCheck.CheckRequest
 }
 
-func (c *ExternalCheck) Execute() CheckOutput {
-	command := strings.Split(c.Command, " ")
-
+func (c *ExternalCheck) Execute() stdCheck.CheckOutput {
 	t0 := time.Now()
-	cmd := exec.Command(command[0], command[1:]...)
+	cmd := exec.Command("/bin/sh", "-c", c.Request.Command)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 
 	if err := cmd.Start(); err != nil {
-		return CheckOutput{
-			Error,
-			err.Error(),
-			time.Now().Sub(t0).Seconds(),
-			t0.Unix(),
+		return stdCheck.CheckOutput{
+			CheckRequest: c.Request,
+			Status:       stdCheck.Error,
+			Output:       err.Error(),
+			Duration:     time.Since(t0).Seconds(),
+			Executed:     t0.Unix(),
 		}
 	}
 
-	status := Success
+	status := stdCheck.Success
 
 	if err := cmd.Wait(); err != nil {
-		status = Error
+		status = stdCheck.Error
 		if exiterr, ok := err.(*exec.ExitError); ok {
 			if statusReturn, ok := exiterr.Sys().(syscall.WaitStatus); ok {
-				status = ExitStatus(statusReturn)
+				status = stdCheck.ExitStatus(statusReturn.ExitStatus())
 			}
 		}
 	}
 
-	return CheckOutput{
-		status,
-		out.String(),
-		time.Now().Sub(t0).Seconds(),
-		t0.Unix(),
+	return stdCheck.CheckOutput{
+		Status:   status,
+		Output:   out.String(),
+		Duration: time.Since(t0).Seconds(),
+		Executed: t0.Unix(),
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	stdCheck "github.com/upfluence/sensu-go/sensu/check"
 	"github.com/upfluence/sensu-client-go/sensu/check"
 )
 
@@ -32,5 +33,8 @@ func (m *Metric) Render() check.ExtensionCheckResult {
 		output = append(output, p.Render())
 	}
 
-	return check.ExtensionCheckResult{check.Success, strings.Join(output, "\n")}
+	return check.ExtensionCheckResult{
+		Status: stdCheck.Success,
+		Output: strings.Join(output, "\n"),
+	}
 }
